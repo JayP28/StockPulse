@@ -5,6 +5,7 @@ from collections import defaultdict
 import pandas as pd
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
+import streamlit as st
 
 nltk.download("vader_lexicon")
 
@@ -55,12 +56,9 @@ TICKERS = sorted(set([
     "WYNN","XEL","XOM","XYL","YUM","ZBH","ZBRA","ZTS"
 ]))
 
-# Tickers excluded because they are too ambiguous in ordinary text:
-# A, ALL, C, D, F, H, I, J, K, L, M, O, T
-
 
 # ============================================================
-# 2. Main indexer / sentiment ranker
+# 2. Main engine
 # ============================================================
 class StockSentimentIndexer:
     def __init__(
@@ -81,29 +79,24 @@ class StockSentimentIndexer:
         self.timestamp_col = timestamp_col
         self.tickers = sorted(set(tickers if tickers is not None else TICKERS))
 
-        required_cols = [title_col, body_col]
-        for col in required_cols:
+        for col in [title_col, body_col]:
             if col not in self.df.columns:
                 raise ValueError(f"Missing required column: {col}")
 
-        # Fill missing values and build one document field
         self.df[title_col] = self.df[title_col].fillna("").astype(str)
         self.df[body_col] = self.df[body_col].fillna("").astype(str)
         self.df["document"] = (
             self.df[title_col].str.strip() + " " + self.df[body_col].str.strip()
         ).str.strip()
 
-        # Optional metadata cleanup
         if score_col in self.df.columns:
             self.df[score_col] = pd.to_numeric(self.df[score_col], errors="coerce").fillna(0)
         if comments_col in self.df.columns:
             self.df[comments_col] = pd.to_numeric(self.df[comments_col], errors="coerce").fillna(0)
 
-        # Sentiment model
         self.sia = SentimentIntensityAnalyzer()
         self._extend_finance_lexicon()
 
-        # Regex patterns and inverted index
         self.patterns = self._build_ticker_patterns()
         self.inverted_index = defaultdict(list)
 
@@ -147,14 +140,6 @@ class StockSentimentIndexer:
         self.sia.lexicon.update(finance_words)
 
     def _build_ticker_patterns(self):
-        """
-        Builds regex patterns for each ticker.
-        Supports:
-          - AAPL
-          - $AAPL
-          - BRK.B and BRK-B
-          - BF.B and BF-B
-        """
         patterns = {}
 
         for ticker in self.tickers:
@@ -166,19 +151,14 @@ class StockSentimentIndexer:
             else:
                 pattern_body = escaped
 
-            pattern = re.compile(
+            patterns[ticker] = re.compile(
                 rf"(?<![A-Za-z0-9])\$?{pattern_body}(?![A-Za-z0-9])",
                 re.IGNORECASE,
             )
-            patterns[ticker] = pattern
 
         return patterns
 
     def build_inverted_index(self):
-        """
-        Build posting lists:
-          ticker -> [doc_row_idx1, doc_row_idx2, ...]
-        """
         self.inverted_index = defaultdict(list)
 
         for row_idx, text in self.df["document"].items():
@@ -186,7 +166,6 @@ class StockSentimentIndexer:
                 continue
 
             text_upper = text.upper()
-
             for ticker, pattern in self.patterns.items():
                 if pattern.search(text_upper):
                     self.inverted_index[ticker].append(row_idx)
@@ -197,16 +176,7 @@ class StockSentimentIndexer:
         ticker = ticker.strip().upper().replace("$", "").replace("-", ".")
         return self.inverted_index.get(ticker, [])
 
-    def retrieve_docs(self, ticker: str):
-        posting_list = self.get_posting_list(ticker)
-        if not posting_list:
-            return self.df.iloc[0:0].copy()
-        return self.df.loc[posting_list].copy()
-
     def extract_context(self, text: str, ticker: str, window: int = 1):
-        """
-        Returns the sentence containing the ticker plus nearby sentences.
-        """
         if not isinstance(text, str) or not text.strip():
             return ""
 
@@ -231,7 +201,6 @@ class StockSentimentIndexer:
             end = min(len(sentences), i + window + 1)
             selected.extend(sentences[start:end])
 
-        # de-duplicate while preserving order
         seen = set()
         out = []
         for s in selected:
@@ -243,16 +212,11 @@ class StockSentimentIndexer:
         return " ".join(out)
 
     def score_text(self, text: str):
-        """
-        Simple sentiment score in [-1, 1].
-        """
         if not isinstance(text, str) or not text.strip():
             return 0.0
 
         text = re.sub(r"\s+", " ", text).strip()
         score = self.sia.polarity_scores(text)["compound"]
-
-        # tiny WSB-style emoji adjustments
         score += text.count("🚀") * 0.08
         score += text.count("📈") * 0.06
         score -= text.count("📉") * 0.06
@@ -260,9 +224,6 @@ class StockSentimentIndexer:
         return max(-1.0, min(1.0, score))
 
     def row_weight(self, row):
-        """
-        Weight by engagement.
-        """
         weight = 1.0
 
         if self.score_col in row and pd.notna(row[self.score_col]):
@@ -273,28 +234,25 @@ class StockSentimentIndexer:
 
         return weight
 
-    def analyze_ticker(self, ticker: str, context_window: int = 1, return_examples: bool = False, top_k: int = 5):
-        """
-        Aggregate sentiment for one ticker.
-        """
+    def analyze_ticker(self, ticker: str, context_window: int = 1, top_k: int = 5):
         ticker = ticker.strip().upper().replace("$", "").replace("-", ".")
         doc_ids = self.get_posting_list(ticker)
 
         if not doc_ids:
-            result = {
+            return {
                 "ticker": ticker,
                 "mentions": 0,
                 "avg_sentiment": None,
                 "weighted_sentiment": None,
-                "label": "no data"
+                "label": "no data",
+                "top_positive_examples": [],
+                "top_negative_examples": []
             }
-            if return_examples:
-                result["top_positive_examples"] = []
-                result["top_negative_examples"] = []
-            return result
 
         subset = self.df.loc[doc_ids].copy()
-        subset["context"] = subset["document"].apply(lambda x: self.extract_context(x, ticker, window=context_window))
+        subset["context"] = subset["document"].apply(
+            lambda x: self.extract_context(x, ticker, window=context_window)
+        )
         subset["sentiment"] = subset["context"].apply(self.score_text)
         subset["weight"] = subset.apply(self.row_weight, axis=1)
         subset["weighted_component"] = subset["sentiment"] * subset["weight"]
@@ -309,79 +267,71 @@ class StockSentimentIndexer:
         else:
             label = "neutral/mixed"
 
-        result = {
+        keep_cols = [c for c in [self.title_col, self.body_col, "context", "sentiment", self.score_col, self.comments_col, self.timestamp_col] if c in subset.columns]
+
+        top_positive = (
+            subset.sort_values("sentiment", ascending=False)[keep_cols]
+            .head(top_k)
+            .to_dict(orient="records")
+        )
+
+        top_negative = (
+            subset.sort_values("sentiment", ascending=True)[keep_cols]
+            .head(top_k)
+            .to_dict(orient="records")
+        )
+
+        return {
             "ticker": ticker,
             "mentions": int(len(subset)),
             "avg_sentiment": float(avg_sentiment),
             "weighted_sentiment": float(weighted_sentiment),
-            "label": label
+            "label": label,
+            "top_positive_examples": top_positive,
+            "top_negative_examples": top_negative
         }
 
-        if return_examples:
-            keep_cols = [self.title_col, self.body_col, "context", "sentiment"]
-            extra_cols = [c for c in [self.score_col, self.comments_col, self.timestamp_col] if c in subset.columns]
-            keep_cols = [c for c in keep_cols if c in subset.columns] + extra_cols
-
-            pos = (
-                subset.sort_values("sentiment", ascending=False)[keep_cols]
-                .head(top_k)
-                .to_dict(orient="records")
-            )
-            neg = (
-                subset.sort_values("sentiment", ascending=True)[keep_cols]
-                .head(top_k)
-                .to_dict(orient="records")
-            )
-            result["top_positive_examples"] = pos
-            result["top_negative_examples"] = neg
-
-        return result
-
     def rank_all_tickers(self, min_mentions: int = 1, context_window: int = 1):
-        """
-        Produce a ranked sentiment table for all tickers in the vocabulary.
-        """
         rows = []
 
         for ticker in self.tickers:
-            result = self.analyze_ticker(ticker, context_window=context_window, return_examples=False)
+            result = self.analyze_ticker(ticker, context_window=context_window, top_k=3)
             if result["mentions"] >= min_mentions:
-                rows.append(result)
+                rows.append({
+                    "ticker": result["ticker"],
+                    "mentions": result["mentions"],
+                    "avg_sentiment": result["avg_sentiment"],
+                    "weighted_sentiment": result["weighted_sentiment"],
+                    "label": result["label"]
+                })
 
         ranked = pd.DataFrame(rows)
 
         if ranked.empty:
             return ranked
 
-        ranked = ranked.sort_values(
+        return ranked.sort_values(
             by=["weighted_sentiment", "mentions"],
             ascending=[False, False]
         ).reset_index(drop=True)
 
-        return ranked
-
-    def get_index_stats(self):
-        rows = []
-        for ticker in self.tickers:
-            rows.append({
-                "ticker": ticker,
-                "posting_list_size": len(self.inverted_index.get(ticker, []))
-            })
-        return pd.DataFrame(rows).sort_values("posting_list_size", ascending=False).reset_index(drop=True)
-
 
 # ============================================================
-# 3. Example usage
+# 3. Streamlit UI
 # ============================================================
-if __name__ == "__main__":
-    # Replace with your actual file path
-    file_path = "Book1.xlsx"
+@st.cache_data
+def load_data(uploaded_file):
+    if uploaded_file.name.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+    elif uploaded_file.name.endswith(".xlsx"):
+        return pd.read_excel(uploaded_file)
+    else:
+        raise ValueError("Please upload a CSV or XLSX file.")
 
-    # Load your Excel file
-    df = pd.read_excel(file_path)
 
-    # Build the system
-    indexer = StockSentimentIndexer(
+@st.cache_resource
+def build_engine(df):
+    engine = StockSentimentIndexer(
         df,
         title_col="title",
         body_col="body",
@@ -390,24 +340,84 @@ if __name__ == "__main__":
         timestamp_col="timestamp",
         tickers=TICKERS,
     )
+    engine.build_inverted_index()
+    return engine
 
-    # Build inverted index
-    indexer.build_inverted_index()
 
-    # Inspect index size
-    stats_df = indexer.get_index_stats()
-    print("\nTop posting lists by size:")
-    print(stats_df.head(20))
+st.set_page_config(page_title="StockPulse", layout="wide")
 
-    # Rank all tickers by sentiment
-    ranked_df = indexer.rank_all_tickers(min_mentions=3, context_window=1)
-    print("\nTop 20 most bullish:")
-    print(ranked_df.head(20))
+st.title("📈 StockPulse")
+st.caption("Sentiment ranking for S&P 500 stocks using WallStreetBets-style post data")
 
-    print("\nTop 20 most bearish:")
-    print(ranked_df.tail(20))
+with st.sidebar:
+    st.header("Controls")
+    uploaded_file = st.file_uploader("Upload your dataset", type=["csv", "xlsx"])
+    context_window = st.slider("Context window", min_value=0, max_value=3, value=1)
+    min_mentions = st.number_input("Minimum mentions for full ranking", min_value=1, value=3, step=1)
 
-    # Example: inspect one ticker in detail
-    example = indexer.analyze_ticker("AAPL", context_window=1, return_examples=True, top_k=3)
-    print("\nDetailed example for AAPL:")
-    print(example)
+if uploaded_file is None:
+    st.info("Upload a CSV or XLSX dataset to begin.")
+    st.stop()
+
+df = load_data(uploaded_file)
+engine = build_engine(df)
+
+st.subheader("Dataset Preview")
+st.dataframe(df.head(10), use_container_width=True)
+
+st.subheader("Analyze a Stock")
+user_prompt = st.text_input("Enter a stock ticker", placeholder="Example: AAPL")
+
+if st.button("Get Sentiment"):
+    if not user_prompt.strip():
+        st.warning("Please enter a ticker.")
+    else:
+        result = engine.analyze_ticker(user_prompt, context_window=context_window, top_k=5)
+
+        st.markdown(f"### Result for {result['ticker']}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Mentions", result["mentions"])
+        col2.metric("Average Sentiment", "N/A" if result["avg_sentiment"] is None else f"{result['avg_sentiment']:.3f}")
+        col3.metric("Weighted Sentiment", "N/A" if result["weighted_sentiment"] is None else f"{result['weighted_sentiment']:.3f}")
+        col4.metric("Label", result["label"])
+
+        st.markdown("#### Top Positive Examples")
+        if result["top_positive_examples"]:
+            for ex in result["top_positive_examples"]:
+                with st.expander(f"Sentiment: {ex['sentiment']:.3f}"):
+                    if "title" in ex:
+                        st.write(f"**Title:** {ex['title']}")
+                    if "body" in ex:
+                        st.write(f"**Body:** {ex['body']}")
+                    if "context" in ex:
+                        st.write(f"**Context:** {ex['context']}")
+        else:
+            st.write("No positive examples found.")
+
+        st.markdown("#### Top Negative Examples")
+        if result["top_negative_examples"]:
+            for ex in result["top_negative_examples"]:
+                with st.expander(f"Sentiment: {ex['sentiment']:.3f}"):
+                    if "title" in ex:
+                        st.write(f"**Title:** {ex['title']}")
+                    if "body" in ex:
+                        st.write(f"**Body:** {ex['body']}")
+                    if "context" in ex:
+                        st.write(f"**Context:** {ex['context']}")
+        else:
+            st.write("No negative examples found.")
+
+st.subheader("Rank All Stocks")
+if st.button("Generate Full Ranking"):
+    ranked_df = engine.rank_all_tickers(min_mentions=min_mentions, context_window=context_window)
+
+    if ranked_df.empty:
+        st.warning("No stocks met the minimum mention threshold.")
+    else:
+        st.dataframe(ranked_df, use_container_width=True)
+
+        st.markdown("#### Top 10 Most Bullish")
+        st.dataframe(ranked_df.head(10), use_container_width=True)
+
+        st.markdown("#### Top 10 Most Bearish")
+        st.dataframe(ranked_df.tail(10), use_container_width=True)
