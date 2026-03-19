@@ -5,23 +5,22 @@ import streamlit as st
 
 
 class StockPulseSentiment:
-    def __init__(self, df, alias_map):
-        self.df = df.copy()
+    def __init__(self, csv_path, alias_map):
+        self.df = pd.read_csv(csv_path)
         self.alias_map = {k.upper(): v for k, v in alias_map.items()}
 
-        # Required text columns
+        # Ensure required columns exist
         if "title" not in self.df.columns:
             self.df["title"] = ""
         if "body" not in self.df.columns:
             self.df["body"] = ""
+        if "url" not in self.df.columns:
+            self.df["url"] = ""
 
         self.df["title"] = self.df["title"].fillna("").astype(str)
         self.df["body"] = self.df["body"].fillna("").astype(str)
         self.df["score"] = pd.to_numeric(self.df.get("score", 0), errors="coerce").fillna(0)
         self.df["comms_num"] = pd.to_numeric(self.df.get("comms_num", 0), errors="coerce").fillna(0)
-
-        if "url" not in self.df.columns:
-            self.df["url"] = ""
 
         self.df["combined_text"] = (self.df["title"] + " " + self.df["body"]).str.strip()
 
@@ -45,6 +44,7 @@ class StockPulseSentiment:
             "squeeze": 1.4,
             "hold": 0.4,
             "hodl": 0.8,
+
             "bear": -1.4,
             "bearish": -2.0,
             "sell": -1.3,
@@ -75,6 +75,7 @@ class StockPulseSentiment:
             "beats earnings": 2.1,
             "beat earnings": 2.1,
             "price target raised": 1.8,
+
             "going to zero": -2.8,
             "miss earnings": -2.1,
             "missed earnings": -2.1,
@@ -265,27 +266,140 @@ class StockPulseSentiment:
         return ranked.head(top_k)
 
 
-DEFAULT_ALIAS_MAP = {
-    "AAPL": ["AAPL", "$AAPL", "Apple"],
-    "TSLA": ["TSLA", "$TSLA", "Tesla"],
-    "NVDA": ["NVDA", "$NVDA", "Nvidia"],
-    "AMD": ["AMD", "$AMD", "Advanced Micro Devices"],
-    "AMZN": ["AMZN", "$AMZN", "Amazon"],
-    "META": ["META", "$META", "Meta", "Facebook"],
-    "MSFT": ["MSFT", "$MSFT", "Microsoft"],
-    "GME": ["GME", "$GME", "Gamestop", "GameStop"],
-    "SPY": ["SPY", "$SPY", "S&P 500", "sp500"],
+ALIAS_MAP = {
+    "AAPL":["AAPL","$AAPL","Apple"],
+    "MSFT":["MSFT","$MSFT","Microsoft"],
+    "AMZN":["AMZN","$AMZN","Amazon"],
+    "GOOGL":["GOOGL","$GOOGL","Alphabet","Google"],
+    "GOOG":["GOOG","$GOOG","Alphabet","Google"],
+    "META":["META","$META","Meta","Facebook"],
+    "TSLA":["TSLA","$TSLA","Tesla"],
+    "NVDA":["NVDA","$NVDA","Nvidia"],
+    "BRK.B":["BRK.B","$BRK.B","Berkshire Hathaway"],
+    "UNH":["UNH","$UNH","UnitedHealth"],
+    "JNJ":["JNJ","$JNJ","Johnson & Johnson"],
+    "V":["V","$V","Visa"],
+    "PG":["PG","$PG","Procter & Gamble"],
+    "XOM":["XOM","$XOM","Exxon Mobil"],
+    "HD":["HD","$HD","Home Depot"],
+    "MA":["MA","$MA","Mastercard"],
+    "CVX":["CVX","$CVX","Chevron"],
+    "ABBV":["ABBV","$ABBV","AbbVie"],
+    "PFE":["PFE","$PFE","Pfizer"],
+    "KO":["KO","$KO","Coca-Cola"],
+    "PEP":["PEP","$PEP","Pepsi"],
+    "TMO":["TMO","$TMO","Thermo Fisher"],
+    "MRK":["MRK","$MRK","Merck"],
+    "COST":["COST","$COST","Costco"],
+    "DIS":["DIS","$DIS","Disney"],
+    "AVGO":["AVGO","$AVGO","Broadcom"],
+    "ACN":["ACN","$ACN","Accenture"],
+    "ABT":["ABT","$ABT","Abbott"],
+    "DHR":["DHR","$DHR","Danaher"],
+    "ADBE":["ADBE","$ADBE","Adobe"],
+    "CRM":["CRM","$CRM","Salesforce"],
+    "NKE":["NKE","$NKE","Nike"],
+    "LLY":["LLY","$LLY","Eli Lilly"],
+    "TXN":["TXN","$TXN","Texas Instruments"],
+    "WMT":["WMT","$WMT","Walmart"],
+    "MCD":["MCD","$MCD","McDonald's"],
+    "NEE":["NEE","$NEE","NextEra Energy"],
+    "LIN":["LIN","$LIN","Linde"],
+    "ORCL":["ORCL","$ORCL","Oracle"],
+    "INTC":["INTC","$INTC","Intel"],
+    "AMD":["AMD","$AMD","Advanced Micro Devices"],
+    "QCOM":["QCOM","$QCOM","Qualcomm"],
+    "UPS":["UPS","$UPS","UPS"],
+    "LOW":["LOW","$LOW","Lowe's"],
+    "PM":["PM","$PM","Philip Morris"],
+    "UNP":["UNP","$UNP","Union Pacific"],
+    "RTX":["RTX","$RTX","Raytheon"],
+    "HON":["HON","$HON","Honeywell"],
+    "IBM":["IBM","$IBM","IBM"],
+    "GE":["GE","$GE","General Electric"],
+    "CAT":["CAT","$CAT","Caterpillar"],
+    "BA":["BA","$BA","Boeing"],
+    "GS":["GS","$GS","Goldman Sachs"],
+    "MS":["MS","$MS","Morgan Stanley"],
+    "JPM":["JPM","$JPM","JPMorgan"],
+    "BAC":["BAC","$BAC","Bank of America"],
+    "WFC":["WFC","$WFC","Wells Fargo"],
+    "C":["C","$C","Citigroup"],
+    "BLK":["BLK","$BLK","BlackRock"],
+    "SPGI":["SPGI","$SPGI","S&P Global"],
+    "AXP":["AXP","$AXP","American Express"],
+    "PLD":["PLD","$PLD","Prologis"],
+    "AMT":["AMT","$AMT","American Tower"],
+    "CCI":["CCI","$CCI","Crown Castle"],
+    "EQIX":["EQIX","$EQIX","Equinix"],
+    "NOW":["NOW","$NOW","ServiceNow"],
+    "INTU":["INTU","$INTU","Intuit"],
+    "ISRG":["ISRG","$ISRG","Intuitive Surgical"],
+    "MDT":["MDT","$MDT","Medtronic"],
+    "SYK":["SYK","$SYK","Stryker"],
+    "ZTS":["ZTS","$ZTS","Zoetis"],
+    "BDX":["BDX","$BDX","Becton Dickinson"],
+    "GILD":["GILD","$GILD","Gilead"],
+    "REGN":["REGN","$REGN","Regeneron"],
+    "VRTX":["VRTX","$VRTX","Vertex"],
+    "AMGN":["AMGN","$AMGN","Amgen"],
+    "CVS":["CVS","$CVS","CVS"],
+    "CI":["CI","$CI","Cigna"],
+    "HUM":["HUM","$HUM","Humana"],
+    "ELV":["ELV","$ELV","Elevance"],
+    "ADP":["ADP","$ADP","ADP"],
+    "PAYX":["PAYX","$PAYX","Paychex"],
+    "FIS":["FIS","$FIS","FIS"],
+    "FISV":["FISV","$FISV","Fiserv"],
+    "SQ":["SQ","$SQ","Block"],
+    "PYPL":["PYPL","$PYPL","PayPal"],
+    "UBER":["UBER","$UBER","Uber"],
+    "LYFT":["LYFT","$LYFT","Lyft"],
+    "BKNG":["BKNG","$BKNG","Booking"],
+    "EXPE":["EXPE","$EXPE","Expedia"],
+    "MAR":["MAR","$MAR","Marriott"],
+    "HLT":["HLT","$HLT","Hilton"],
+    "SBUX":["SBUX","$SBUX","Starbucks"],
+    "YUM":["YUM","$YUM","Yum Brands"],
+    "DPZ":["DPZ","$DPZ","Dominos"],
+    "CMG":["CMG","$CMG","Chipotle"],
+    "TGT":["TGT","$TGT","Target"],
+    "DG":["DG","$DG","Dollar General"],
+    "DLTR":["DLTR","$DLTR","Dollar Tree"],
+    "ROST":["ROST","$ROST","Ross"],
+    "BBY":["BBY","$BBY","Best Buy"],
+    "KSS":["KSS","$KSS","Kohl's"],
+    "ETSY":["ETSY","$ETSY","Etsy"],
+    "EBAY":["EBAY","$EBAY","eBay"],
+    "SHOP":["SHOP","$SHOP","Shopify"],
+    "AFL":["AFL","$AFL","Aflac"],
+    "AIG":["AIG","$AIG","AIG"],
+    "ALL":["ALL","$ALL","Allstate"],
+    "MET":["MET","$MET","MetLife"],
+    "PRU":["PRU","$PRU","Prudential"],
+    "TRV":["TRV","$TRV","Travelers"],
+    "CB":["CB","$CB","Chubb"],
+    "MMC":["MMC","$MMC","Marsh"],
+    "AON":["AON","$AON","Aon"],
+    "ICE":["ICE","$ICE","Intercontinental Exchange"],
+    "CME":["CME","$CME","CME Group"],
+    "SLB":["SLB","$SLB","Schlumberger"],
+    "EOG":["EOG","$EOG","EOG Resources"],
+    "PSX":["PSX","$PSX","Phillips 66"],
+    "MPC":["MPC","$MPC","Marathon Petroleum"],
+    "OXY":["OXY","$OXY","Occidental"],
+    "DVN":["DVN","$DVN","Devon Energy"],
+    "DUK":["DUK","$DUK","Duke Energy"],
+    "SO":["SO","$SO","Southern Company"],
+    "EXC":["EXC","$EXC","Exelon"],
+    "AEP":["AEP","$AEP","American Electric Power"],
+    "SPY":["SPY","$SPY","S&P 500","sp500"],
 }
 
 
-@st.cache_data
-def load_data(uploaded_file):
-    return pd.read_csv(uploaded_file)
-
-
 @st.cache_resource
-def build_model(df):
-    return StockPulseSentiment(df, DEFAULT_ALIAS_MAP)
+def build_model(csv_path):
+    return StockPulseSentiment(csv_path, ALIAS_MAP)
 
 
 st.set_page_config(page_title="StockPulse", layout="wide")
@@ -294,19 +408,19 @@ st.caption("Sentiment scoring for stock discussion posts")
 
 with st.sidebar:
     st.header("Controls")
-    uploaded_file = st.file_uploader("Upload CSV dataset", type=["csv"])
-    ticker = st.selectbox("Choose a ticker", options=list(DEFAULT_ALIAS_MAP.keys()))
+    csv_path = st.text_input("CSV file path", value="prototype_posts.csv")
+    ticker = st.selectbox("Choose a ticker", options=list(ALIAS_MAP.keys()))
     top_k = st.slider("Top posts to show", min_value=1, max_value=10, value=5)
+    show_ranking = st.button("Generate Ranking")
 
-if uploaded_file is None:
-    st.info("Upload a CSV file to begin.")
+try:
+    model = build_model(csv_path)
+except Exception as e:
+    st.error(f"Could not load CSV file: {e}")
     st.stop()
 
-df = load_data(uploaded_file)
-model = build_model(df)
-
 st.subheader("Dataset Preview")
-st.dataframe(df.head(10), use_container_width=True)
+st.dataframe(model.df.head(10), use_container_width=True)
 
 result = model.analyze_ticker(ticker, top_k=top_k)
 
@@ -333,8 +447,8 @@ else:
     st.write("No posts found for this ticker.")
 
 st.subheader("Overall Ranking")
-if st.button("Generate Ranking"):
-    ranked_df = model.rank_all_tickers(top_k=len(DEFAULT_ALIAS_MAP))
+if show_ranking:
+    ranked_df = model.rank_all_tickers(top_k=len(ALIAS_MAP))
     if ranked_df.empty:
         st.warning("No ranked results available.")
     else:
